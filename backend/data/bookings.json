@@ -1,0 +1,18 @@
+[
+  {
+    "code": "KK-722681",
+    "showtimeId": "2026-11-06_interstellar_1810",
+    "movieId": "interstellar",
+    "movieTitle": "Інтерстеллар",
+    "date": "2026-11-06",
+    "time": "18:10",
+    "room": "Зал 1",
+    "seats": [
+      "D5"
+    ],
+    "name": "sdfsdf",
+    "email": "ereskoila@gmail.com",
+    "total": 290,
+    "createdAt": "2026-11-03T15:12:36.662Z"
+  }
+]
