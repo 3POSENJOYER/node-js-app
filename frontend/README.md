@@ -1,31 +1,5 @@
-# КіноКадр
+# Frontend
 
-Демо вебзастосунку кінотеатру: афіша, розклад сеансів, вибір місць і бронювання квитків.
+The React and Vite frontend for **KinoKadr**, a full-stack cinema booking pet project.
 
-## Запуск
-
-1. Установіть залежності в `backend` та `frontend`, якщо вони ще не встановлені.
-2. Запустіть API:
-
-   ```sh
-   cd backend
-   npm start
-   ```
-
-3. В іншому терміналі запустіть клієнт:
-
-   ```sh
-   cd frontend
-   npm run dev
-   ```
-
-У режимі розробки Vite проксуює `/api` на `http://localhost:5000`.
-
-## Можливості
-
-- Перегляд фільмів і сеансів на найближчі сім днів.
-- Пошук за назвою та фільтр за жанром.
-- Інтерактивна схема залу з недоступними місцями.
-- Бронювання до восьми місць і пошук квитків за електронною поштою.
-
-Бронювання зберігаються у `backend/data/bookings.json`. Сервіс призначений для локального демо: онлайн-оплата, облікові записи й захист персональних даних не реалізовані. Зображення постерів завантажуються із TMDB Image CDN.
+For project features, local setup, Docker Compose, API endpoints, and CI/CD instructions, see the [repository README](../README.md).

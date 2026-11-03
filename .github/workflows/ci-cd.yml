@@ -1,0 +1,154 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint, build, and smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            backend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Check backend syntax
+        working-directory: backend
+        run: node --check server.js
+
+      - name: Smoke test backend API
+        working-directory: backend
+        run: |
+          set -eu
+          node server.js > /tmp/cinema-backend.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          ready=false
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:5000/api/health > /dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$ready" != true ]; then
+            cat /tmp/cinema-backend.log
+            exit 1
+          fi
+
+          curl --fail --silent http://127.0.0.1:5000/api/movies?date="$(date -u +%F)" \
+            | node -e "let body=''; process.stdin.on('data', chunk => body += chunk); process.stdin.on('end', () => { const data = JSON.parse(body); if (data.movies.length !== 5 || data.movies.some(movie => movie.showtimes.length === 0)) process.exit(1); console.log('Movie catalog API smoke test passed'); });"
+
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+
+  container-build:
+    name: Build Docker images
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+          tags: cinema-frontend:ci
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          tags: cinema-backend:ci
+
+  publish:
+    name: Publish images to Docker Hub
+    runs-on: ubuntu-latest
+    needs: [checks, container-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create frontend image metadata
+        id: frontend-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/node-js-app-frontend
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Publish frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ steps.frontend-meta.outputs.tags }}
+          labels: ${{ steps.frontend-meta.outputs.labels }}
+
+      - name: Create backend image metadata
+        id: backend-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/node-js-app-backend
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Publish backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.backend-meta.outputs.tags }}
+          labels: ${{ steps.backend-meta.outputs.labels }}

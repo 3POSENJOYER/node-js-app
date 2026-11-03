@@ -1,0 +1,32 @@
+services:
+  backend:
+    image: ${DOCKERHUB_USERNAME:-legendass}/node-js-app-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - backend-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  frontend:
+    image: ${DOCKERHUB_USERNAME:-legendass}/node-js-app-frontend:latest
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile  
+    ports:
+      - "${FRONTEND_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  backend-data:
