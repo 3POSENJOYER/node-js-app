@@ -6,7 +6,6 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --chown=node:node server.js ./
-RUN mkdir -p /app/data && chown node:node /app/data
 
 USER node
 

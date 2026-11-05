@@ -1,12 +1,17 @@
 const express = require('express')
 const cors = require('cors')
-const fs = require('node:fs')
-const path = require('node:path')
 const crypto = require('node:crypto')
+const { Pool } = require('pg')
 
 const app = express()
 const PORT = process.env.PORT || 5000
-const BOOKINGS_FILE = path.join(__dirname, 'data', 'bookings.json')
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://kino:kino-local-password@localhost:5432/kinokadr',
+})
+
+pool.on('error', (error) => {
+  console.error('Помилка з’єднання з PostgreSQL:', error)
+})
 
 const movies = [
   {
@@ -131,23 +136,57 @@ function findShowtime(showtimeId) {
   return null
 }
 
-function readBookings() {
+async function initializeDatabase() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bookings (
+      code TEXT PRIMARY KEY,
+      showtime_id TEXT NOT NULL,
+      movie_id TEXT NOT NULL,
+      movie_title TEXT NOT NULL,
+      date DATE NOT NULL,
+      time TEXT NOT NULL,
+      room TEXT NOT NULL,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      total INTEGER NOT NULL CHECK (total >= 0),
+      created_at TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS booking_seats (
+      showtime_id TEXT NOT NULL,
+      seat TEXT NOT NULL,
+      booking_code TEXT NOT NULL REFERENCES bookings(code) ON DELETE CASCADE,
+      seat_order INTEGER NOT NULL,
+      CONSTRAINT booking_seats_showtime_seat_unique UNIQUE (showtime_id, seat),
+      CONSTRAINT booking_seats_booking_seat_unique UNIQUE (booking_code, seat)
+    );
+
+    CREATE INDEX IF NOT EXISTS bookings_email_created_at_idx
+      ON bookings (email, created_at DESC);
+  `)
+}
+
+async function withTransaction(callback) {
+  const client = await pool.connect()
   try {
-    const parsed = JSON.parse(fs.readFileSync(BOOKINGS_FILE, 'utf8'))
-    if (!Array.isArray(parsed)) throw new Error('Файл бронювань має некоректний формат.')
-    return parsed
+    await client.query('BEGIN')
+    const result = await callback(client)
+    await client.query('COMMIT')
+    return result
   } catch (error) {
-    if (error.code === 'ENOENT') return []
+    try {
+      await client.query('ROLLBACK')
+    } catch (rollbackError) {
+      console.error('Не вдалося скасувати транзакцію PostgreSQL:', rollbackError)
+    }
     throw error
+  } finally {
+    client.release()
   }
 }
 
-function saveBookings(bookings) {
-  fs.mkdirSync(path.dirname(BOOKINGS_FILE), { recursive: true })
-  fs.writeFileSync(BOOKINGS_FILE, `${JSON.stringify(bookings, null, 2)}\n`, 'utf8')
-}
-
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  await pool.query('SELECT 1')
   res.json({ status: 'ok' })
 })
 
@@ -166,19 +205,21 @@ app.get('/api/movies', (req, res) => {
   })
 })
 
-app.get('/api/showtimes/:showtimeId/seats', (req, res) => {
+app.get('/api/showtimes/:showtimeId/seats', async (req, res) => {
   const showtime = findShowtime(req.params.showtimeId)
   if (!showtime) {
     return res.status(404).json({ error: 'Сеанс не знайдено.' })
   }
 
-  const bookedSeats = readBookings()
-    .filter((booking) => booking.showtimeId === showtime.id)
-    .flatMap((booking) => booking.seats)
+  const { rows } = await pool.query(
+    'SELECT seat FROM booking_seats WHERE showtime_id = $1 ORDER BY booking_code, seat_order',
+    [showtime.id],
+  )
+  const bookedSeats = rows.map(({ seat }) => seat)
   res.json({ showtimeId: showtime.id, bookedSeats })
 })
 
-app.post('/api/bookings', (req, res) => {
+app.post('/api/bookings', async (req, res) => {
   const { showtimeId, seats, name, email } = req.body || {}
   const showtime = typeof showtimeId === 'string' ? findShowtime(showtimeId) : null
   const normalizedName = typeof name === 'string' ? name.trim() : ''
@@ -200,16 +241,6 @@ app.post('/api/bookings', (req, res) => {
     return res.status(400).json({ error: 'Вкажіть коректну електронну пошту.' })
   }
 
-  const bookings = readBookings()
-  const alreadyBooked = new Set(
-    bookings
-      .filter((booking) => booking.showtimeId === showtime.id)
-      .flatMap((booking) => booking.seats),
-  )
-  if (seats.some((seat) => alreadyBooked.has(seat))) {
-    return res.status(409).json({ error: 'Одне або кілька обраних місць уже зайняте. Оновіть схему залу та оберіть інші.' })
-  }
-
   const booking = {
     code: `KK-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
     showtimeId: showtime.id,
@@ -225,19 +256,71 @@ app.post('/api/bookings', (req, res) => {
     createdAt: new Date().toISOString(),
   }
 
-  saveBookings([...bookings, booking])
+  try {
+    await withTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO bookings (
+          code, showtime_id, movie_id, movie_title, date, time, room, name, email, total, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          booking.code,
+          booking.showtimeId,
+          booking.movieId,
+          booking.movieTitle,
+          booking.date,
+          booking.time,
+          booking.room,
+          booking.name,
+          booking.email,
+          booking.total,
+          booking.createdAt,
+        ],
+      )
+
+      for (const [seatOrder, seat] of seats.entries()) {
+        await client.query(
+          'INSERT INTO booking_seats (showtime_id, seat, booking_code, seat_order) VALUES ($1, $2, $3, $4)',
+          [showtime.id, seat, booking.code, seatOrder],
+        )
+      }
+    })
+  } catch (error) {
+    if (error.code === '23505' && error.constraint === 'booking_seats_showtime_seat_unique') {
+      return res.status(409).json({ error: 'Одне або кілька обраних місць уже зайняте. Оновіть схему залу та оберіть інші.' })
+    }
+    throw error
+  }
+
   res.status(201).json({ booking })
 })
 
-app.get('/api/bookings', (req, res) => {
+app.get('/api/bookings', async (req, res) => {
   const email = typeof req.query.email === 'string' ? req.query.email.trim().toLowerCase() : ''
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: 'Вкажіть коректну електронну пошту.' })
   }
 
-  const bookings = readBookings()
-    .filter((booking) => booking.email === email)
-    .sort((first, second) => second.createdAt.localeCompare(first.createdAt))
+  const { rows: bookings } = await pool.query(
+    `SELECT
+      b.code,
+      b.showtime_id AS "showtimeId",
+      b.movie_id AS "movieId",
+      b.movie_title AS "movieTitle",
+      b.date::text AS date,
+      b.time,
+      b.room,
+      b.name,
+      b.email,
+      COALESCE(array_agg(s.seat ORDER BY s.seat_order) FILTER (WHERE s.seat IS NOT NULL), '{}') AS seats,
+      b.total,
+      b.created_at AS "createdAt"
+    FROM bookings b
+    LEFT JOIN booking_seats s ON s.booking_code = b.code
+    WHERE b.email = $1
+    GROUP BY b.code
+    ORDER BY b.created_at DESC`,
+    [email],
+  )
   res.json({ bookings })
 })
 
@@ -247,6 +330,15 @@ app.use((error, req, res, next) => {
   res.status(500).json({ error: 'Внутрішня помилка сервера. Спробуйте ще раз пізніше.' })
 })
 
-app.listen(PORT, () => {
-  console.log(`Сервер запущено на http://localhost:${PORT}`)
+async function startServer() {
+  await initializeDatabase()
+  app.listen(PORT, () => {
+    console.log(`Сервер запущено на http://localhost:${PORT}`)
+  })
+}
+
+startServer().catch(async (error) => {
+  console.error('Не вдалося запустити сервер:', error)
+  await pool.end()
+  process.exitCode = 1
 })

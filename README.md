@@ -18,7 +18,7 @@ KinoKadr is a responsive cinema website with a React frontend and an Express API
 | Area | Technologies |
 | --- | --- |
 | Frontend | React, Vite, JavaScript, CSS |
-| Backend | Node.js, Express |
+| Backend | Node.js, Express, PostgreSQL |
 | Containers | Docker, Docker Compose, Nginx |
 | CI/CD | GitHub Actions, Docker Hub |
 
@@ -31,7 +31,9 @@ KinoKadr is a responsive cinema website with a React frontend and an Express API
    ```bash
    cd backend
    npm ci
-   cd ../frontend
+   cd ..
+   docker compose up -d postgres
+   cd frontend
    npm ci
    ```
 
@@ -48,6 +50,8 @@ KinoKadr is a responsive cinema website with a React frontend and an Express API
    cd frontend
    npm run dev
    ```
+
+The API connects to the local PostgreSQL instance using the defaults in `.env.example`. The API creates its tables on startup. To customize the local API connection, set `DATABASE_URL` in the shell before starting it; Docker Compose reads settings from `.env`.
 
 Open the Vite URL printed in the terminal. The development server proxies `/api` requests to `http://localhost:5000`.
 
@@ -72,7 +76,7 @@ To pull the published Docker Hub images instead of building locally:
    docker compose up -d
    ```
 
-The frontend is served by Nginx, which proxies `/api` to the backend container. Booking data persists in the `backend-data` Docker volume. Set `FRONTEND_PORT` in `.env` to change the host port (default `8080`).
+The frontend is served by Nginx, which proxies `/api` to the backend container. PostgreSQL stores bookings in the persistent `postgres-data` Docker volume. Set `FRONTEND_PORT` in `.env` to change the host port (default `8080`); database settings are also configurable there. Replace the example database password before exposing the database beyond a local development environment.
 
 ## API overview
 
@@ -104,4 +108,4 @@ docker-compose.yml       Local and container orchestration
 
 ## Current limitations
 
-This is a learning project and a functional demo, not a production ticketing service. It does not process payments or provide user accounts. Booking data is stored in a JSON file, and the movie catalog and showtimes are sample data. Poster images are loaded from TMDB's image CDN.
+This is a learning project and a functional demo, not a production ticketing service. It does not process payments or provide user accounts. The movie catalog and showtimes are sample data. Existing bookings in `backend/data/bookings.json` are not automatically imported into PostgreSQL. Poster images are loaded from TMDB's image CDN.

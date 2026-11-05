@@ -13,6 +13,22 @@ jobs:
   checks:
     name: Lint, build, and smoke test
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://kino:kino-password@localhost:5432/kinokadr
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: kinokadr
+          POSTGRES_USER: kino
+          POSTGRES_PASSWORD: kino-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kino -d kinokadr"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -70,6 +86,73 @@ jobs:
 
           curl --fail --silent http://127.0.0.1:5000/api/movies?date="$(date -u +%F)" \
             | node -e "let body=''; process.stdin.on('data', chunk => body += chunk); process.stdin.on('end', () => { const data = JSON.parse(body); if (data.movies.length !== 5 || data.movies.some(movie => movie.showtimes.length === 0)) process.exit(1); console.log('Movie catalog API smoke test passed'); });"
+
+          node <<'NODE'
+          const assert = require('node:assert/strict')
+
+          async function checkBookingApi() {
+            const date = new Date().toISOString().slice(0, 10)
+            const showtimeId = `${date}_dune_1320`
+            const bookingResponse = await fetch('http://127.0.0.1:5000/api/bookings', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                showtimeId,
+                seats: ['A1', 'A2'],
+                name: 'CI Test',
+                email: 'ci@example.com',
+              }),
+            })
+            assert.equal(bookingResponse.status, 201)
+            const { booking } = await bookingResponse.json()
+            assert.deepEqual(booking.seats, ['A1', 'A2'])
+            assert.equal(booking.total, 440)
+
+            const conflictResponse = await fetch('http://127.0.0.1:5000/api/bookings', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                showtimeId,
+                seats: ['A2'],
+                name: 'CI Test',
+                email: 'ci@example.com',
+              }),
+            })
+            assert.equal(conflictResponse.status, 409)
+
+            const simultaneousShowtimeId = `${date}_dune_1640`
+            const simultaneousBookings = await Promise.all(
+              [1, 2].map(() => fetch('http://127.0.0.1:5000/api/bookings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  showtimeId: simultaneousShowtimeId,
+                  seats: ['B1'],
+                  name: 'CI Test',
+                  email: 'ci@example.com',
+                }),
+              })),
+            )
+            assert.deepEqual(
+              simultaneousBookings.map(({ status }) => status).sort((a, b) => a - b),
+              [201, 409],
+            )
+
+            const seatsResponse = await fetch(`http://127.0.0.1:5000/api/showtimes/${showtimeId}/seats`)
+            assert.deepEqual((await seatsResponse.json()).bookedSeats, ['A1', 'A2'])
+
+            const lookupResponse = await fetch('http://127.0.0.1:5000/api/bookings?email=ci%40example.com')
+            const { bookings } = await lookupResponse.json()
+            assert.equal(bookings.length, 2)
+            assert.ok(bookings.some(({ code }) => code === booking.code))
+            console.log('PostgreSQL booking API smoke test passed')
+          }
+
+          checkBookingApi().catch((error) => {
+            console.error(error)
+            process.exitCode = 1
+          })
+          NODE
 
       - name: Validate Docker Compose configuration
         run: docker compose config --quiet

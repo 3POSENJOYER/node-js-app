@@ -1,13 +1,30 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kinokadr}
+      POSTGRES_USER: ${POSTGRES_USER:-kino}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kino-local-password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kino} -d ${POSTGRES_DB:-kinokadr}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   backend:
     image: ${DOCKERHUB_USERNAME:-legendass}/node-js-app-backend:latest
     build:
       context: ./backend
       dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kino}:${POSTGRES_PASSWORD:-kino-local-password}@postgres:5432/${POSTGRES_DB:-kinokadr}
     ports:
       - "5000:5000"
-    volumes:
-      - backend-data:/app/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s
@@ -15,6 +32,9 @@ services:
       retries: 3
       start_period: 5s
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   frontend:
     image: ${DOCKERHUB_USERNAME:-legendass}/node-js-app-frontend:latest
@@ -29,4 +49,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  backend-data:
+  postgres-data:
